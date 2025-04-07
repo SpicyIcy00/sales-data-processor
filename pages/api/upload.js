@@ -65,10 +65,11 @@ export default async function handler(req, res) {
     }
 
     const form = formidable();
-    let files = null; // Initialize files variable outside the promise scope for cleanup
+    let fields = null; // Declare fields in the outer scope
+    let files = null;  // Declare files in the outer scope
 
     try {
-        // Assign parsed fields/files to the outer scope variable
+        // Assign parsed fields/files to the outer scope variables
         ({ fields, files } = await new Promise((resolve, reject) => {
             form.parse(req, (err, parsedFields, parsedFiles) => {
                 if (err) return reject(err);
@@ -76,11 +77,10 @@ export default async function handler(req, res) {
             });
         }));
 
-
         // File Validation
         if (!files?.file?.[0]) return res.status(400).json({ message: "No file uploaded." });
         const file = files.file[0];
-        const tempFilePath = file.filepath; // Define here for access in finally block
+        const tempFilePath = file.filepath; // Define here for access in finally block within try
 
         // Tab Name Validation (checks 'sheetTab' then 'store')
         let tabName = fields?.sheetTab?.[0]?.trim();
@@ -116,7 +116,6 @@ export default async function handler(req, res) {
         console.log(`Parsed ${rawData.length} raw data rows.`);
 
         // --- 2. Process Data: Find Headers, Filter, Group, Sort ---
-
         const firstRowKeys = Object.keys(rawData[0] || {});
         const findActualHeader = (targetHeader) => firstRowKeys.find(key => key.toLowerCase() === targetHeader.toLowerCase()) || null;
 
@@ -172,7 +171,6 @@ export default async function handler(req, res) {
         }
         console.log(`Final data array has ${finalRows.length} rows (using bot logic).`);
 
-
         // --- 3. Interact with Google Sheets ---
         const targetSheetId = await getSheetId(sheetsApi, spreadsheetId, tabName);
 
@@ -187,7 +185,7 @@ export default async function handler(req, res) {
         console.log(`Writing ${finalRows.length} rows to sheet: ${tabName}`);
         await sheetsApi.spreadsheets.values.update({ spreadsheetId: spreadsheetId, range: `${tabName}!A1`, valueInputOption: 'USER_ENTERED', requestBody: { values: finalRows } });
 
-        // --- 6. Apply Formatting (BANDING STILL DISABLED) ---
+        // --- 6. Apply Formatting (BANDING STILL DISABLED for testing) ---
         console.log(`Applying formatting (Banding Disabled)...`);
         const rowCount = finalRows.length;
         const colCount = OUTPUT_HEADERS.length;
@@ -255,17 +253,26 @@ export default async function handler(req, res) {
              console.log("<<< END Applying formatting - SKIPPED (no requests)");
         }
 
-
         // Success
         console.log(">>> Handler finished successfully.");
         return res.status(200).json({ message: 'Uploaded and formatted successfully' });
 
     } catch (error) {
         console.error("Handler Error:", error);
-         // Cleanup attempted error handling - Ensure tempFilePath is accessible
+         // Cleanup attempted error handling - files should be accessible now
          const tempFilePathOnError = files?.file?.[0]?.filepath;
          if (tempFilePathOnError) {
-            await fs.unlink(tempFilePathOnError).catch(e => console.error("Error deleting temp file on handler error:", e));
+            // Check if file exists before attempting unlink
+            try {
+                await fs.access(tempFilePathOnError); // Check existence
+                await fs.unlink(tempFilePathOnError);
+                console.log("Cleaned up temp file on error.");
+            } catch (unlinkError) {
+                // Log if file doesn't exist or unlink fails, but don't crash
+                if (unlinkError.code !== 'ENOENT') { // ENOENT = Error NO ENTity (file not found)
+                     console.error("Error deleting temp file on handler error:", unlinkError);
+                }
+            }
          }
         return res.status(500).json({ message: `An server error occurred: ${error.message}` });
     }
