@@ -16,7 +16,6 @@ export const config = {
 let googleAuthClient = null;
 let sheetsApi = null;
 async function getSheetsService() {
-    // ... (Keep the cached initialization logic from the previous version) ...
     if (sheetsApi) return sheetsApi;
     try {
         const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
@@ -33,8 +32,7 @@ async function getSheetsService() {
 
 // --- Get/Create Sheet ID ---
 const getSheetId = async (sheetsApiInstance, spreadsheetId, sheetTitle) => {
-    // ... (Keep the getSheetId logic with creation from the previous version) ...
-     try {
+    try {
         const response = await sheetsApiInstance.spreadsheets.get({ spreadsheetId, fields: 'sheets(properties(sheetId,title))' });
         const sheet = response.data.sheets.find(s => s.properties.title === sheetTitle);
         if (!sheet) {
@@ -54,7 +52,6 @@ const getSheetId = async (sheetsApiInstance, spreadsheetId, sheetTitle) => {
 
 // --- Parse Sales Number ---
 const parseSales = (value) => {
-    // ... (Keep the parseSales logic from the previous version) ...
     if (value === null || value === undefined || value === '') return -Infinity;
     const num = Number(String(value).replace(/,/g, ''));
     return isNaN(num) ? -Infinity : num;
@@ -99,7 +96,7 @@ export default async function handler(req, res) {
             if (file.originalFilename.toLowerCase().endsWith('.csv')) {
                 rawData = parse(fileContent, { columns: true, skip_empty_lines: true, trim: true, bom: true });
             } else if (file.originalFilename.toLowerCase().endsWith('.xlsx')) {
-                const workbook = xlsx.read(fileContent, {type: 'buffer'}); // Read from buffer
+                const workbook = xlsx.read(fileContent, {type: 'buffer'});
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
                 rawData = xlsx.utils.sheet_to_json(sheet, { defval: null });
             } else {
@@ -135,7 +132,7 @@ export default async function handler(req, res) {
              const name = item[actualProductNameHeader] ? String(item[actualProductNameHeader]).trim() : '';
              const cat = item[actualCategoryHeader] ? String(item[actualCategoryHeader]).trim() : 'Uncategorized';
              const sold = parseSales(item[actualSalesHeader]);
-             if (!name && cat === 'Uncategorized' && sold === -Infinity) continue; // Skip truly blank rows
+             if (!name && cat === 'Uncategorized' && sold === -Infinity) continue;
              if (!groupedData[cat]) groupedData[cat] = [];
              groupedData[cat].push({ name, cat, sold });
              processedRowCount++;
@@ -158,8 +155,7 @@ export default async function handler(req, res) {
                 const displaySold = item.sold === -Infinity ? '' : item.sold;
                 finalRows.push([item.name, item.cat, displaySold]);
             }
-            // Always add blank row *after* category items
-            if (sortedItems.length > 0) { // Only add if category wasn't empty
+            if (sortedItems.length > 0) {
                  console.log(`   --- Adding blank row after ${category} ---`);
                  finalRows.push(emptyRow);
             } else {
@@ -167,7 +163,6 @@ export default async function handler(req, res) {
             }
         });
 
-        // Remove the very last potentially blank row if it exists
         if (finalRows.length > 1 && finalRows[finalRows.length - 1].every(cell => cell === '')) {
              console.log("   --- Removing trailing blank row ---");
              finalRows.pop();
@@ -179,7 +174,7 @@ export default async function handler(req, res) {
 
         // --- 4. Clear Existing Values AND Formatting ---
         console.log(`Clearing sheet: ${tabName} (Sheet ID: ${targetSheetId})`);
-        const clearGridRange = { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 2000, startColumnIndex: 0, endColumnIndex: 26 }; // Clear more rows just in case
+        const clearGridRange = { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 2000, startColumnIndex: 0, endColumnIndex: 26 };
         const clearRequest = { repeatCell: { range: clearGridRange, cell: { userEnteredFormat: {}, userEnteredValue: null }, fields: "userEnteredFormat,userEnteredValue" } };
         await sheetsApi.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [clearRequest] } });
         console.log(`Sheet ${tabName} cleared.`);
@@ -188,47 +183,39 @@ export default async function handler(req, res) {
         console.log(`Writing ${finalRows.length} rows to sheet: ${tabName}`);
         await sheetsApi.spreadsheets.values.update({ spreadsheetId: spreadsheetId, range: `${tabName}!A1`, valueInputOption: 'USER_ENTERED', requestBody: { values: finalRows } });
 
-        // --- 6. Apply Formatting (BANDING RE-ENABLED) ---
-        console.log(`Applying formatting (Banding Enabled)...`);
+        // --- 6. Apply Formatting (MINIMAL - Header + Inner Borders ONLY) ---
+        console.log(`Applying formatting (Minimal - Header/Inner Borders)...`);
         const rowCount = finalRows.length;
         const colCount = OUTPUT_HEADERS.length; // Always 3
         const LIGHT_GRAY_BORDER = { red: 0.85, green: 0.85, blue: 0.85 };
-        const LIGHT_GRAY_BAND = { red: 0.95, green: 0.95, blue: 0.95 }; // VERY light gray
 
         const formatRequests = [];
 
-        // a) Borders (Light Gray, Solid, Thin) - Applied to A1:C<rowCount>
-        formatRequests.push({
-            updateBorders: {
-                range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: colCount },
-                top:    { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                bottom: { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                left:   { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                right:  { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                innerHorizontal: { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                innerVertical:   { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } }
-            }
-        });
-
-        // b) Banding (White / VERY Light Gray) - Applied to A2:C<rowCount> - RE-ENABLED
-        if (rowCount > 1) {
+        // a) Borders (Light Gray, Solid, Thin - INNER ONLY)
+        if (rowCount > 1 && colCount > 1) {
              formatRequests.push({
-                 addBanding: {
-                     bandedRange: {
-                         // Apply banding to the entire range including blank rows
-                         // Google Sheets should handle this reasonably visually
-                         range: { sheetId: targetSheetId, startRowIndex: 1, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: colCount },
-                         rowProperties: {
-                             firstBandColorStyle: { rgbColor: {} }, // Default White
-                             secondBandColorStyle: { rgbColor: LIGHT_GRAY_BAND } // Use very light gray
-                         },
-                         // IMPORTANT: Omitting headerProperties as our range starts below the header
-                     }
+                 updateBorders: {
+                     range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: colCount },
+                     // NO outer borders specified
+                     innerHorizontal: { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
+                     innerVertical:   { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } }
+                     // Fields default to what's specified if not explicitly listed here
                  }
              });
         }
 
-         // c) Header Formatting (Bold, White Text, Blue BG, Centered) - Applied to A1:C1
+        // b) Banding (Keep Commented Out for this test)
+        /*
+        if (rowCount > 1) {
+             formatRequests.push({
+                 addBanding: {
+                     bandedRange: { // ... banding request content ... },
+                 }
+             });
+        }
+        */
+
+         // c) Header Formatting (Keep Active)
          formatRequests.push({
              repeatCell: {
                  range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: colCount },
@@ -242,7 +229,7 @@ export default async function handler(req, res) {
          });
 
         // Log the requests being sent (for debugging)
-        // console.log("Formatting Requests:", JSON.stringify(formatRequests, null, 2));
+        console.log("Minimal Formatting Requests:", JSON.stringify(formatRequests, null, 2));
 
         // Execute formatting batch update
         if (formatRequests.length > 0) {
@@ -251,14 +238,11 @@ export default async function handler(req, res) {
                      spreadsheetId: spreadsheetId,
                      requestBody: { requests: formatRequests },
                  });
-                 console.log("Formatting applied successfully.");
+                 console.log("Minimal formatting applied successfully.");
              } catch (formatErr) {
-                 // Log specific Google API errors if available
                  const errorDetails = formatErr.errors ? JSON.stringify(formatErr.errors) : formatErr.message;
-                 console.warn(`Formatting failed: ${errorDetails}`);
+                 console.warn(`Minimal formatting failed: ${errorDetails}`);
                  console.log("<<< END Applying formatting - FAILED (but continuing)");
-                 // Optional: Decide if you want to return an error or partial success
-                 // return res.status(500).json({ message: `Data uploaded, but formatting failed: ${errorDetails}` });
              }
         } else {
              console.log("<<< END Applying formatting - SKIPPED (no requests)");
@@ -274,7 +258,6 @@ export default async function handler(req, res) {
         if (tempFilePathOnError) {
             await fs.unlink(tempFilePathOnError).catch(e => console.error("Error deleting temp file on handler error:", e));
         }
-        // Send back the specific error message
         return res.status(500).json({ message: `An server error occurred: ${error.message}` });
     }
 }
