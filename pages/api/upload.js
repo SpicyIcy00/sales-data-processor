@@ -183,39 +183,44 @@ export default async function handler(req, res) {
         console.log(`Writing ${finalRows.length} rows to sheet: ${tabName}`);
         await sheetsApi.spreadsheets.values.update({ spreadsheetId: spreadsheetId, range: `${tabName}!A1`, valueInputOption: 'USER_ENTERED', requestBody: { values: finalRows } });
 
-        // --- 6. Apply Formatting (MINIMAL - Header + Inner Borders ONLY) ---
-        console.log(`Applying formatting (Minimal - Header/Inner Borders)...`);
+        // --- 6. Apply Formatting (Header + Full Borders + Banding RE-ENABLED) ---
+        console.log(`Applying formatting (Header + Full Borders + Banding)...`);
         const rowCount = finalRows.length;
         const colCount = OUTPUT_HEADERS.length; // Always 3
         const LIGHT_GRAY_BORDER = { red: 0.85, green: 0.85, blue: 0.85 };
+        const LIGHT_GRAY_BAND = { red: 0.95, green: 0.95, blue: 0.95 }; // VERY light gray
 
         const formatRequests = [];
 
-        // a) Borders (Light Gray, Solid, Thin - INNER ONLY)
-        if (rowCount > 1 && colCount > 1) {
-             formatRequests.push({
-                 updateBorders: {
-                     range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: colCount },
-                     // NO outer borders specified
-                     innerHorizontal: { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                     innerVertical:   { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } }
-                     // Fields default to what's specified if not explicitly listed here
-                 }
-             });
-        }
+        // a) Borders (Light Gray, Solid, Thin - INNER AND OUTER)
+        formatRequests.push({
+            updateBorders: {
+                range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: colCount },
+                top:    { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
+                bottom: { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
+                left:   { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
+                right:  { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
+                innerHorizontal: { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
+                innerVertical:   { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } }
+            }
+        });
 
-        // b) Banding (Keep Commented Out for this test)
-        /*
+        // b) Banding (White / VERY Light Gray) - RE-ENABLED
         if (rowCount > 1) {
              formatRequests.push({
                  addBanding: {
-                     bandedRange: { // ... banding request content ... },
+                     bandedRange: {
+                         range: { sheetId: targetSheetId, startRowIndex: 1, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: colCount },
+                         rowProperties: {
+                             firstBandColorStyle: { rgbColor: {} }, // Default White
+                             secondBandColorStyle: { rgbColor: LIGHT_GRAY_BAND } // Use very light gray
+                         },
+                     }
                  }
              });
         }
-        */
 
-         // c) Header Formatting (Keep Active)
+         // c) Header Formatting (Bold, White Text, Blue BG, Centered)
          formatRequests.push({
              repeatCell: {
                  range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: colCount },
@@ -229,7 +234,7 @@ export default async function handler(req, res) {
          });
 
         // Log the requests being sent (for debugging)
-        console.log("Minimal Formatting Requests:", JSON.stringify(formatRequests, null, 2));
+        console.log("Formatting Requests (Header + Full Borders + Banding):", JSON.stringify(formatRequests, null, 2));
 
         // Execute formatting batch update
         if (formatRequests.length > 0) {
@@ -238,10 +243,10 @@ export default async function handler(req, res) {
                      spreadsheetId: spreadsheetId,
                      requestBody: { requests: formatRequests },
                  });
-                 console.log("Minimal formatting applied successfully.");
+                 console.log("Full formatting applied successfully.");
              } catch (formatErr) {
                  const errorDetails = formatErr.errors ? JSON.stringify(formatErr.errors) : formatErr.message;
-                 console.warn(`Minimal formatting failed: ${errorDetails}`);
+                 console.warn(`Full formatting failed: ${errorDetails}`);
                  console.log("<<< END Applying formatting - FAILED (but continuing)");
              }
         } else {
