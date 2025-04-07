@@ -65,17 +65,26 @@ export default async function handler(req, res) {
     }
 
     const form = formidable();
+    let files = null; // Initialize files variable outside the promise scope for cleanup
 
     try {
-        const [fields, files] = await form.parse(req);
+        // Assign parsed fields/files to the outer scope variable
+        ({ fields, files } = await new Promise((resolve, reject) => {
+            form.parse(req, (err, parsedFields, parsedFiles) => {
+                if (err) return reject(err);
+                resolve({ fields: parsedFields, files: parsedFiles });
+            });
+        }));
+
 
         // File Validation
-        if (!files.file?.[0]) return res.status(400).json({ message: "No file uploaded." });
+        if (!files?.file?.[0]) return res.status(400).json({ message: "No file uploaded." });
         const file = files.file[0];
+        const tempFilePath = file.filepath; // Define here for access in finally block
 
         // Tab Name Validation (checks 'sheetTab' then 'store')
-        let tabName = fields.sheetTab?.[0]?.trim();
-        if (!tabName) tabName = fields.store?.[0]?.trim();
+        let tabName = fields?.sheetTab?.[0]?.trim();
+        if (!tabName) tabName = fields?.store?.[0]?.trim();
         if (!tabName) return res.status(400).json({ message: "Sheet tab name ('sheetTab' or 'store' field) not specified." });
 
         // Spreadsheet ID Validation
@@ -84,12 +93,11 @@ export default async function handler(req, res) {
 
         // --- 1. Parse File Data ---
         let rawData = []; // Expect array of objects
-        const tempFilePath = file.filepath; // Keep path for cleanup
         try {
             console.log(`Parsing file: ${file.originalFilename}`);
             if (file.originalFilename.toLowerCase().endsWith('.csv')) {
                 const content = await fs.readFile(tempFilePath);
-                rawData = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true }); // Add bom: true
+                rawData = parse(content, { columns: true, skip_empty_lines: true, trim: true, bom: true });
             } else if (file.originalFilename.toLowerCase().endsWith('.xlsx')) {
                 const workbook = xlsx.readFile(tempFilePath);
                 const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -99,7 +107,7 @@ export default async function handler(req, res) {
             }
         } catch (parseError) {
              console.error("File parsing error:", parseError);
-             throw new Error(`Error parsing file: ${parseError.message}`); // Throw to be caught by outer catch
+             throw new Error(`Error parsing file: ${parseError.message}`);
         } finally {
              await fs.unlink(tempFilePath).catch(e => console.error("Error deleting temp file:", e)); // Cleanup temp file
         }
@@ -109,103 +117,86 @@ export default async function handler(req, res) {
 
         // --- 2. Process Data: Find Headers, Filter, Group, Sort ---
 
-        // Find the *actual* header names used in the file (case-insensitive)
         const firstRowKeys = Object.keys(rawData[0] || {});
-        const findActualHeader = (targetHeader) => {
-            return firstRowKeys.find(key => key.toLowerCase() === targetHeader.toLowerCase()) || null;
-        };
+        const findActualHeader = (targetHeader) => firstRowKeys.find(key => key.toLowerCase() === targetHeader.toLowerCase()) || null;
 
         const actualProductNameHeader = findActualHeader(PRODUCT_NAME_COLUMN);
         const actualCategoryHeader = findActualHeader(CATEGORY_COLUMN_NAME);
         const actualSalesHeader = findActualHeader(SALES_COLUMN_NAME);
 
-        // **Strictly validate that ALL required columns were found**
         if (!actualProductNameHeader) return res.status(400).json({ message: `Required header similar to "${PRODUCT_NAME_COLUMN}" not found.` });
         if (!actualCategoryHeader) return res.status(400).json({ message: `Required header similar to "${CATEGORY_COLUMN_NAME}" not found.` });
         if (!actualSalesHeader) return res.status(400).json({ message: `Required header similar to "${SALES_COLUMN_NAME}" not found.` });
 
         console.log(`Using Headers - Name: ${actualProductNameHeader}, Category: ${actualCategoryHeader}, Sales: ${actualSalesHeader}`);
 
-        // ** Filter, Group, and Sort **
         const groupedData = {};
         let processedRowCount = 0;
         for (const item of rawData) {
              if (typeof item !== 'object' || item === null) continue;
-
              const name = item[actualProductNameHeader] ? String(item[actualProductNameHeader]).trim() : '';
              const cat = item[actualCategoryHeader] ? String(item[actualCategoryHeader]).trim() : 'Uncategorized';
              const sold = parseSales(item[actualSalesHeader]);
-
-             if (!name) continue; // Skip rows without a product name
-
+             if (!name) continue;
              if (!groupedData[cat]) groupedData[cat] = [];
              groupedData[cat].push({ name, cat, sold });
              processedRowCount++;
         }
         console.log(`Processed ${processedRowCount} valid rows into groups.`);
-        // console.log("Grouped Data Structure:", JSON.stringify(groupedData, null, 2)); // Deep log if needed
 
-
-        // ** Sort Categories Alphabetically **
         const sortedCategories = Object.keys(groupedData).sort((a, b) => a.localeCompare(b));
 
-        // ** Reconstruct Final Data Array (Headers + Sorted Data + Blank Rows) **
-        const finalRows = [OUTPUT_HEADERS]; // Start with our standard output headers
+        // --- Reconstruct Final Data Array (Using Bot's Blank Row Logic) ---
+        const finalRows = [OUTPUT_HEADERS];
         const emptyRow = ['', '', ''];
 
         sortedCategories.forEach((category, index) => {
             console.log(`Adding category: ${category}`);
-            // Sort items within category by sales (desc), then name (asc)
             const sortedItems = groupedData[category].sort((a, b) => {
                 if (b.sold !== a.sold) return b.sold - a.sold;
                 return a.name.localeCompare(b.name);
             });
-
-            // Add sorted items for this category
             for (const item of sortedItems) {
-                // Don't display -Infinity, show as blank or 0
                 const displaySold = item.sold === -Infinity ? '' : item.sold;
                 finalRows.push([item.name, item.cat, displaySold]);
-                // console.log(`  -> Adding item: ${item.name}, ${item.cat}, ${displaySold}`); // Detail log if needed
             }
-
-            // **Add blank row separator IF it's NOT the last category**
-            if (index < sortedCategories.length - 1) {
-                console.log(`   --- Adding blank row after ${category} ---`);
-                finalRows.push(emptyRow);
-            }
+            // Always add blank row after category items
+            console.log(`   --- Adding blank row after ${category} ---`);
+            finalRows.push(emptyRow);
         });
-        console.log(`Final data array has ${finalRows.length} rows.`);
+
+        // Remove the very last blank row
+        if (finalRows.length > 1 && finalRows[finalRows.length - 1].every(cell => cell === '')) {
+             console.log("   --- Removing trailing blank row ---");
+             finalRows.pop();
+        }
+        console.log(`Final data array has ${finalRows.length} rows (using bot logic).`);
+
 
         // --- 3. Interact with Google Sheets ---
         const targetSheetId = await getSheetId(sheetsApi, spreadsheetId, tabName);
 
         // --- 4. Clear Existing Values AND Formatting ---
         console.log(`Clearing sheet: ${tabName} (Sheet ID: ${targetSheetId})`);
-        const clearGridRange = { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 1500, startColumnIndex: 0, endColumnIndex: 26 }; // Clear more rows/cols
+        const clearGridRange = { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 1500, startColumnIndex: 0, endColumnIndex: 26 };
         const clearRequest = { repeatCell: { range: clearGridRange, cell: { userEnteredFormat: {}, userEnteredValue: null }, fields: "userEnteredFormat,userEnteredValue" } };
         await sheetsApi.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [clearRequest] } });
         console.log(`Sheet ${tabName} cleared.`);
 
         // --- 5. Write the new data ---
         console.log(`Writing ${finalRows.length} rows to sheet: ${tabName}`);
-        await sheetsApi.spreadsheets.values.update({
-            spreadsheetId: spreadsheetId,
-            range: `${tabName}!A1`, // Write starts at A1
-            valueInputOption: 'USER_ENTERED', // Interprets values like typing
-            requestBody: { values: finalRows }, // Contains only 3 columns
-        });
+        await sheetsApi.spreadsheets.values.update({ spreadsheetId: spreadsheetId, range: `${tabName}!A1`, valueInputOption: 'USER_ENTERED', requestBody: { values: finalRows } });
 
-        // --- 6. Apply Formatting ---
-        console.log(`Applying formatting...`);
+        // --- 6. Apply Formatting (BANDING STILL DISABLED) ---
+        console.log(`Applying formatting (Banding Disabled)...`);
         const rowCount = finalRows.length;
-        const colCount = OUTPUT_HEADERS.length; // Always 3
+        const colCount = OUTPUT_HEADERS.length;
         const LIGHT_GRAY_BORDER = { red: 0.85, green: 0.85, blue: 0.85 };
-        const LIGHT_GRAY_BAND = { red: 0.95, green: 0.95, blue: 0.95 }; // VERY light gray
+        // const LIGHT_GRAY_BAND = { red: 0.95, green: 0.95, blue: 0.95 }; // Banding color defined but request below is commented out
 
         const formatRequests = [];
 
-        // a) Borders (Light Gray, Solid, Thin) - Applied to A1:C<rowCount>
+        // a) Borders (Light Gray, Solid, Thin) - KEEP ACTIVE
         formatRequests.push({
             updateBorders: {
                 range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: colCount },
@@ -218,7 +209,8 @@ export default async function handler(req, res) {
             }
         });
 
-        // b) Banding (White / VERY Light Gray) - Applied to A2:C<rowCount>
+        // b) Banding (Keep Commented Out for this test)
+        /*
         if (rowCount > 1) {
              formatRequests.push({
                  addBanding: {
@@ -232,8 +224,9 @@ export default async function handler(req, res) {
                  }
              });
         }
+        */
 
-         // c) Header Formatting (Bold, White Text, Blue BG, Centered) - Applied to A1:C1
+         // c) Header Formatting - KEEP ACTIVE
          formatRequests.push({
              repeatCell: {
                  range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: colCount },
@@ -253,18 +246,23 @@ export default async function handler(req, res) {
                      spreadsheetId: spreadsheetId,
                      requestBody: { requests: formatRequests },
                  });
-                 console.log("Formatting applied successfully.");
+                 console.log("Formatting applied successfully (Banding Disabled).");
              } catch (formatErr) {
                  console.warn('Formatting failed:', formatErr.errors ? formatErr.errors.map(e=>e.message).join('; ') : formatErr.message);
+                 console.log("<<< END Applying formatting - FAILED (but continuing)");
              }
+        } else {
+             console.log("<<< END Applying formatting - SKIPPED (no requests)");
         }
 
+
         // Success
+        console.log(">>> Handler finished successfully.");
         return res.status(200).json({ message: 'Uploaded and formatted successfully' });
 
     } catch (error) {
         console.error("Handler Error:", error);
-         // Cleanup attempted error handling
+         // Cleanup attempted error handling - Ensure tempFilePath is accessible
          const tempFilePathOnError = files?.file?.[0]?.filepath;
          if (tempFilePathOnError) {
             await fs.unlink(tempFilePathOnError).catch(e => console.error("Error deleting temp file on handler error:", e));
