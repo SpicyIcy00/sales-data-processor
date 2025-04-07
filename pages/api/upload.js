@@ -115,7 +115,6 @@ export default async function handler(req, res) {
         // --- 2. Process Data: Find Headers, Filter, Group, Sort ---
         const firstRowKeys = Object.keys(rawData[0] || {});
         const findActualHeader = (targetHeader) => firstRowKeys.find(key => key.toLowerCase() === targetHeader.toLowerCase()) || null;
-
         const actualProductNameHeader = findActualHeader(PRODUCT_NAME_COLUMN);
         const actualCategoryHeader = findActualHeader(CATEGORY_COLUMN_NAME);
         const actualSalesHeader = findActualHeader(SALES_COLUMN_NAME);
@@ -144,7 +143,6 @@ export default async function handler(req, res) {
         // --- Reconstruct Final Data Array (Using Bot's Blank Row Logic) ---
         const finalRows = [OUTPUT_HEADERS];
         const emptyRow = ['', '', ''];
-
         sortedCategories.forEach((category, index) => {
             console.log(`Adding category: ${category}`);
             const sortedItems = groupedData[category].sort((a, b) => {
@@ -162,7 +160,6 @@ export default async function handler(req, res) {
                  console.log(`   --- Skipping blank row after empty category: ${category} ---`);
             }
         });
-
         if (finalRows.length > 1 && finalRows[finalRows.length - 1].every(cell => cell === '')) {
              console.log("   --- Removing trailing blank row ---");
              finalRows.pop();
@@ -172,10 +169,11 @@ export default async function handler(req, res) {
         // --- 3. Interact with Google Sheets ---
         const targetSheetId = await getSheetId(sheetsApi, spreadsheetId, tabName);
 
-        // --- 4. Clear Existing Values AND Formatting ---
+        // --- 4. Clear Existing Values AND Formatting (Using repeatCell) ---
         console.log(`Clearing sheet: ${tabName} (Sheet ID: ${targetSheetId})`);
         const clearGridRange = { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 2000, startColumnIndex: 0, endColumnIndex: 26 };
         const clearRequest = { repeatCell: { range: clearGridRange, cell: { userEnteredFormat: {}, userEnteredValue: null }, fields: "userEnteredFormat,userEnteredValue" } };
+        // It's generally safer to clear format/values *before* writing.
         await sheetsApi.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [clearRequest] } });
         console.log(`Sheet ${tabName} cleared.`);
 
@@ -183,71 +181,88 @@ export default async function handler(req, res) {
         console.log(`Writing ${finalRows.length} rows to sheet: ${tabName}`);
         await sheetsApi.spreadsheets.values.update({ spreadsheetId: spreadsheetId, range: `${tabName}!A1`, valueInputOption: 'USER_ENTERED', requestBody: { values: finalRows } });
 
-        // --- 6. Apply Formatting (Header + Full Borders + Banding RE-ENABLED) ---
-        console.log(`Applying formatting (Header + Full Borders + Banding)...`);
+        // --- 6. Apply Formatting (Using Structure from Your Working Code) ---
+        console.log(`Applying formatting using previous structure...`);
         const rowCount = finalRows.length;
-        const colCount = OUTPUT_HEADERS.length; // Always 3
-        const LIGHT_GRAY_BORDER = { red: 0.85, green: 0.85, blue: 0.85 };
-        const LIGHT_GRAY_BAND = { red: 0.95, green: 0.95, blue: 0.95 }; // VERY light gray
+        const columnCount = OUTPUT_HEADERS.length; // Always 3
 
-        const formatRequests = [];
+        // Define colors similar to your working example (adjust if needed)
+        const BORDER_COLOR_LIGHT_GRAY = { red: 0.7, green: 0.7, blue: 0.7 };
+        const BANDING_HEADER_COLOR = { red: 0.85, green: 0.85, blue: 0.85 }; // Header for banding rule
+        const BANDING_FIRST_COLOR = { red: 0.95, green: 0.95, blue: 0.95 }; // Light gray
+        const BANDING_SECOND_COLOR = { red: 1, green: 1, blue: 1 };       // White
 
-        // a) Borders (Light Gray, Solid, Thin - INNER AND OUTER)
-        formatRequests.push({
-            updateBorders: {
-                range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: colCount },
-                top:    { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                bottom: { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                left:   { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                right:  { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                innerHorizontal: { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } },
-                innerVertical:   { style: "SOLID", width: 1, colorStyle: { rgbColor: LIGHT_GRAY_BORDER } }
-            }
-        });
-
-        // b) Banding (White / VERY Light Gray) - RE-ENABLED
-        if (rowCount > 1) {
-             formatRequests.push({
-                 addBanding: {
-                     bandedRange: {
-                         range: { sheetId: targetSheetId, startRowIndex: 1, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: colCount },
-                         rowProperties: {
-                             firstBandColorStyle: { rgbColor: {} }, // Default White
-                             secondBandColorStyle: { rgbColor: LIGHT_GRAY_BAND } // Use very light gray
-                         },
-                     }
+        const formatRequests = [
+            // Apply Borders (using repeatCell from your example)
+            {
+              repeatCell: {
+                range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: columnCount },
+                cell: { userEnteredFormat: { borders: {
+                  top:    { style: 'SOLID_THIN', colorStyle: { rgbColor: BORDER_COLOR_LIGHT_GRAY } },
+                  bottom: { style: 'SOLID_THIN', colorStyle: { rgbColor: BORDER_COLOR_LIGHT_GRAY } },
+                  left:   { style: 'SOLID_THIN', colorStyle: { rgbColor: BORDER_COLOR_LIGHT_GRAY } },
+                  right:  { style: 'SOLID_THIN', colorStyle: { rgbColor: BORDER_COLOR_LIGHT_GRAY } },
+                  // Note: repeatCell applies the SAME border to all cells in range,
+                  // it doesn't distinguish inner/outer like updateBorders. This might be okay.
+                }}},
+                fields: 'userEnteredFormat.borders', // Specify only borders field
+              },
+            },
+            // Apply Alternating Row Colors (using addBanding from your example)
+            {
+              addBanding: {
+                bandedRange: {
+                  // bandedRangeId: Math.floor(Math.random() * 10000), // ID is often optional
+                  range: { sheetId: targetSheetId, startRowIndex: 1, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: columnCount },
+                  rowProperties: {
+                    headerColorStyle: { rgbColor: BANDING_HEADER_COLOR }, // Header color for the banding rule itself
+                    firstBandColorStyle: { rgbColor: BANDING_FIRST_COLOR }, // Light gray
+                    secondBandColorStyle: { rgbColor: BANDING_SECOND_COLOR }, // White
+                  },
+                },
+              },
+            },
+             // Apply Header Formatting (Blue BG, White Bold Text, Centered) - Keep this separate
+             {
+                 repeatCell: {
+                     range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: columnCount },
+                     cell: { userEnteredFormat: {
+                         backgroundColorStyle: { rgbColor: { red: 0.2, green: 0.4, blue: 0.6 } },
+                         textFormat: { foregroundColorStyle: { rgbColor: { red: 1.0, green: 1.0, blue: 1.0 } }, bold: true },
+                         horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE"
+                     }},
+                     // Explicitly update borders *again* for header if needed, otherwise background/text overwrite previous border application
+                     // It might be better to apply borders AFTER text/background formatting
+                     fields: "userEnteredFormat(backgroundColorStyle,textFormat,horizontalAlignment,verticalAlignment)"
                  }
-             });
-        }
-
-         // c) Header Formatting (Bold, White Text, Blue BG, Centered)
-         formatRequests.push({
-             repeatCell: {
-                 range: { sheetId: targetSheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: colCount },
-                 cell: { userEnteredFormat: {
-                     backgroundColorStyle: { rgbColor: { red: 0.2, green: 0.4, blue: 0.6 } },
-                     textFormat: { foregroundColorStyle: { rgbColor: { red: 1.0, green: 1.0, blue: 1.0 } }, bold: true },
-                     horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE"
-                 }},
-                 fields: "userEnteredFormat(backgroundColorStyle,textFormat,horizontalAlignment,verticalAlignment)"
+             },
+             // Optional: Freeze Header Row (from your example)
+             {
+                 updateSheetProperties: {
+                     properties: { sheetId: targetSheetId, gridProperties: { frozenRowCount: 1 }},
+                     fields: 'gridProperties.frozenRowCount'
+                 }
+             },
+             // Optional: Auto-resize columns (from your example)
+             {
+                 autoResizeDimensions: {
+                     dimensions: { sheetId: targetSheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: columnCount }
+                 }
              }
-         });
-
-        // Log the requests being sent (for debugging)
-        console.log("Formatting Requests (Header + Full Borders + Banding):", JSON.stringify(formatRequests, null, 2));
+          ];
 
         // Execute formatting batch update
+        console.log("Formatting Requests (Previous Structure):", JSON.stringify(formatRequests, null, 2));
         if (formatRequests.length > 0) {
              try {
                  await sheetsApi.spreadsheets.batchUpdate({
                      spreadsheetId: spreadsheetId,
                      requestBody: { requests: formatRequests },
                  });
-                 console.log("Full formatting applied successfully.");
+                 console.log("Formatting applied successfully using previous structure.");
              } catch (formatErr) {
                  const errorDetails = formatErr.errors ? JSON.stringify(formatErr.errors) : formatErr.message;
-                 console.warn(`Full formatting failed: ${errorDetails}`);
-                 console.log("<<< END Applying formatting - FAILED (but continuing)");
+                 console.warn(`Formatting failed (Previous Structure): ${errorDetails}`);
              }
         } else {
              console.log("<<< END Applying formatting - SKIPPED (no requests)");
